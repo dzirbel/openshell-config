@@ -1,0 +1,4 @@
+*.sublime-project
+*.sublime-workspace
+/codex/ssh_config
+/codex/ssh_config.*

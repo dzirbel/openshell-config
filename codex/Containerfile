@@ -1,0 +1,70 @@
+# Build-only installer: the final image receives just the SDK packages.
+FROM docker.io/library/ubuntu:24.04 AS android-sdk
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip openjdk-21-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned SDK installer 19.0; SHA-256 verified against Google's repository archive.
+# Installing the packages below accepts their Android SDK license.
+RUN curl --fail --location --retry 3 \
+      https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+      --output /tmp/android-tools.zip \
+    && echo '7ec965280a073311c339e571cd5de778b9975026cfcbe79f2b1cdcb1e15317ee  /tmp/android-tools.zip' | sha256sum --check \
+    && unzip -q /tmp/android-tools.zip -d /tmp/android-tools \
+    && yes | /tmp/android-tools/cmdline-tools/bin/sdkmanager --sdk_root=/opt/android-sdk \
+      "platforms;android-36" "build-tools;36.0.0" "platform-tools" \
+    && test -s /opt/android-sdk/platforms/android-36/android.jar \
+    && /opt/android-sdk/build-tools/36.0.0/aapt2 version \
+    && /opt/android-sdk/platform-tools/adb version \
+    && rm -rf /opt/android-sdk/.temp \
+    && chmod -R a-w /opt/android-sdk
+
+FROM docker.io/library/ubuntu:24.04
+
+# This recipe targets this computer's x86_64 architecture.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install the complete, pinned standalone Codex package, including its helpers.
+RUN curl --fail --location --retry 3 \
+      https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-package-x86_64-unknown-linux-musl.tar.gz \
+      --output /tmp/codex.tar.gz \
+    && echo 'a945df3df83e849dd7b74787e27f8a459c1946b0e3afe3dc8eef8a8d1845fd4f  /tmp/codex.tar.gz' | sha256sum --check \
+    && mkdir -p /opt/codex \
+    && tar -xzf /tmp/codex.tar.gz --directory /opt/codex \
+    && rm /tmp/codex.tar.gz \
+    && /opt/codex/bin/codex --version
+
+COPY --from=android-sdk /opt/android-sdk /opt/android-sdk
+
+# Keep guest setup here rather than in separate build-input files.
+RUN <<'SETUP'
+set -eu
+ln -s /opt/android-sdk/platform-tools/adb /usr/local/bin/adb
+ln -s /opt/android-sdk/platform-tools/fastboot /usr/local/bin/fastboot
+
+# SSH and the TUI must find the same guest-only state without env forwarding.
+cat > /usr/local/bin/codex <<'LAUNCHER'
+#!/bin/sh
+export CODEX_HOME=/sandbox/.codex
+exec /opt/codex/bin/codex "$@"
+LAUNCHER
+chmod 755 /usr/local/bin/codex
+install -d -m 700 -o 1000 -g 1000 /sandbox/.codex
+install -d -m 700 -o 1000 -g 1000 /sandbox/.android
+install -d -o 1000 -g 1000 /sandbox/project
+cat > /sandbox/.codex/config.toml <<'CONFIG'
+# OpenShell supplies the external VM/filesystem/network boundary.
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+approvals_reviewer = "user"
+cli_auth_credentials_store = "file"
+CONFIG
+chown 1000:1000 /sandbox/.codex/config.toml
+SETUP
+
+USER 1000:1000
+WORKDIR /sandbox/project
+CMD ["/bin/sleep", "infinity"]
