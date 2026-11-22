@@ -3,15 +3,18 @@
 set -euo pipefail
 umask 077
 
-action=${1:?Usage: recreate.sh recreate-or-restore sandbox image policy ssh_config [--env KEY=VALUE ...]}
+action=${1:?Usage: recreate.sh recreate-or-restore sandbox image policy ssh_config harness toolchain [create flags]}
 sandbox=${2:?Missing sandbox name}
 image=${3:?Missing image}
 policy=${4:?Missing policy path}
 ssh_config=${5:?Missing SSH configuration path}
-shift 5
-sandbox_environment=("$@")
+harness=${6:?Missing harness}
+toolchain=${7:?Missing toolchain}
+shift 7
+create_flags=("$@")
 [[ $action == recreate || $action == restore ]] || exit 2
 [[ $sandbox =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || exit 2
+mkdir -p -- "$(dirname -- "$ssh_config")"
 
 backup_dir="${XDG_STATE_HOME:-$HOME/.local/state}/openshell/recreate/$sandbox"
 mkdir -p "$backup_dir"
@@ -21,6 +24,7 @@ flock -n 9 || { echo "Another migration is running for $sandbox." >&2; exit 1; }
 backup="$backup_dir/sandbox.tar.gz"
 ssh_before="$backup_dir/ssh_config.before"
 pending="$backup_dir/incomplete"
+plan="$backup_dir/replacement.json"
 if [[ $action == recreate && -f $pending ]]; then
     echo 'An earlier migration is incomplete. Run make restore instead of replacing its backup.' >&2
     exit 1
@@ -51,8 +55,8 @@ on_exit() {
         fi
         if [[ $backup_ready == true ]]; then
             printf '\nMigration did not finish. Verified backup retained at:\n  %s\n' "$backup" >&2
-            printf 'After resolving the error, retry restoration with:\n  make -C %q restore SANDBOX=%q IMAGE=%q\n' \
-                "$(dirname "$ssh_config")" "$sandbox" "$image" >&2
+            printf 'After resolving the error, retry restoration with:\n  make -C %q restore SANDBOX=%q HARNESS=%q TOOLCHAIN=%q IMAGE=%q\n' \
+                "$(dirname -- "$(dirname -- "${BASH_SOURCE[0]}")")" "$sandbox" "$harness" "$toolchain" "$image" >&2
         else
             echo 'This attempt stopped before deleting any sandbox.' >&2
         fi
@@ -70,7 +74,18 @@ remote() {
 create() {
     openshell sandbox create --name "$sandbox" --from "$image" \
         --policy "$policy" --approval-mode manual --no-auto-providers \
-        "${sandbox_environment[@]}" --detach -- /bin/sleep infinity
+        "${create_flags[@]}" "${provider_flags[@]}" --detach -- /bin/sleep infinity
+}
+
+read_providers() {
+    local page token="" names
+    while :; do
+        page=$(openshell sandbox provider list "$sandbox" --output json --page-token "$token") || return
+        names=$(jq -r '.providers | map(.name | strings)[]' <<<"$page") || return
+        [[ -z $names ]] || printf '%s\n' "$names"
+        token=$(jq -r '.next_page_token // empty' <<<"$page") || return
+        [[ -n $token ]] || break
+    done
 }
 
 wait_until_deleted() {
@@ -84,14 +99,43 @@ wait_until_deleted() {
 }
 
 # Validate the inputs before interrupting the existing VM.
-podman image exists "$image"
+image_id=$(podman image inspect --format '{{.Id}}' "$image")
 openshell-prover check --boundary "$policy" "$policy" >/dev/null
 
+provider_flags=()
 if [[ $action == restore ]]; then
     (cd "$backup_dir" && sha256sum --check --status sandbox.tar.gz.sha256)
     tar -tzf "$backup" >/dev/null
     backup_ready=true
+    if [[ -f $plan ]]; then
+        jq -e --arg harness "$harness" --arg toolchain "$toolchain" --arg image "$image_id" \
+            '.harness == $harness and .toolchain == $toolchain and .image_id == $image' "$plan" >/dev/null || {
+            echo 'Restore requires the harness, toolchain and built image used for the interrupted replacement.' >&2
+            exit 1
+        }
+        providers=$(jq -r '.providers[]' "$plan")
+        original_id=$(jq -er '.original_id' "$plan")
+    elif [[ $harness == codex && $toolchain == android ]]; then
+        # Backups from before fleet support had no attached provider or plan.
+        providers=
+        original_id=
+    else
+        echo 'Missing replacement plan for this migration.' >&2
+        exit 1
+    fi
+else
+    details=$(openshell sandbox get "$sandbox" --output json)
+    original_id=$(jq -er '.id | select(length > 0)' <<<"$details")
+    original_harness=$(jq -r '.labels.harness // empty' <<<"$details")
+    if [[ -n $original_harness && $original_harness != "$harness" ]]; then
+        printf '%s uses %s. Create a fresh sandbox to switch harnesses.\n' "$sandbox" "$original_harness" >&2
+        exit 1
+    fi
+    providers=$(read_providers)
 fi
+while IFS= read -r provider; do
+    [[ -z $provider ]] || provider_flags+=(--provider "$provider")
+done <<<"$providers"
 
 # Stop GUI auto-reconnections from launching writers during the transfer.
 if [[ -f $ssh_config ]]; then
@@ -119,9 +163,13 @@ if [[ $action == recreate ]]; then
     backup_ready=true
 
     echo "Replacing $sandbox from $image..."
+    jq -n --arg harness "$harness" --arg toolchain "$toolchain" --arg image "$image_id" \
+        --arg original_id "$original_id" --arg providers "$providers" \
+        '{harness: $harness, toolchain: $toolchain, image_id: $image, original_id: $original_id,
+          providers: ($providers | split("\n") | map(select(length > 0)))}' >"$plan"
     touch "$pending"
-    openshell sandbox stop "$sandbox"
     replacement_started=true
+    openshell sandbox stop "$sandbox"
     openshell sandbox delete "$sandbox"
     wait_until_deleted
     create
@@ -130,8 +178,17 @@ else
     replacement_started=true
     names=$(openshell sandbox list --names)
     if grep -Fxq -- "$sandbox" <<<"$names"; then
-        openshell sandbox stop "$sandbox"
-        openshell sandbox start "$sandbox"
+        details=$(openshell sandbox get "$sandbox" --output json)
+        current_id=$(jq -er '.id | select(length > 0)' <<<"$details")
+        if [[ $current_id == "$original_id" ]]; then
+            openshell sandbox stop "$sandbox"
+            openshell sandbox delete "$sandbox"
+            wait_until_deleted
+            create
+        else
+            openshell sandbox stop "$sandbox"
+            openshell sandbox start "$sandbox"
+        fi
     else
         create
     fi
@@ -163,5 +220,5 @@ ssh_temporary=$(mktemp "${ssh_config}.XXXXXX")
 openshell sandbox ssh-config "$sandbox" >"$ssh_temporary"
 mv -- "$ssh_temporary" "$ssh_config"
 ssh_temporary=
-rm -f -- "$ssh_before" "$pending"
+rm -f -- "$ssh_before" "$pending" "$plan"
 printf '\n%s is ready. Last /sandbox backup: %s\n' "$sandbox" "$backup"

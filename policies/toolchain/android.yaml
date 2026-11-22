@@ -1,0 +1,16 @@
+  java:
+    binaries:
+      - path: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+      - path: /sandbox/.local/jdks/*/bin/java
+      - path: /sandbox/.local/jdks/*/bin/java-native
+    endpoints:
+      - {host: plugins-artifacts.gradle.org, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: plugins.gradle.org, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: services.gradle.org, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: repo.maven.apache.org, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: dl.google.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: download.eclipse.org, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: groovy.jfrog.io, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: storage.googleapis.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: download.jetbrains.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: download-cdn.jetbrains.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}

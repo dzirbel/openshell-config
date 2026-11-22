@@ -1,0 +1,31 @@
+  codex_subscription:
+    binaries:
+      - path: /opt/codex/bin/codex
+    endpoints:
+      - host: auth.openai.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: {method: POST, path: /api/accounts/deviceauth/**}
+          - allow: {method: GET, path: /api/accounts/deviceauth/**}
+          - allow: {method: POST, path: /oauth/token}
+      - host: chatgpt.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: {method: GET, path: /backend-api/codex/**}
+          - allow: {method: POST, path: /backend-api/codex/**}
+          # Required during account/read bootstrap for workspace discovery.
+          - allow: {method: GET, path: /backend-api/wham/accounts/check}
+      - host: ab.chatgpt.com
+        port: 443
+
+  codex_github:
+    binaries:
+      - path: /opt/codex/bin/codex
+    endpoints:
+      - {host: api.github.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: raw.githubusercontent.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+

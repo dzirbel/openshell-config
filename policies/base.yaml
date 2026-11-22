@@ -1,0 +1,19 @@
+version: 1
+
+filesystem_policy:
+  include_workdir: false
+  read_only: [/bin, /usr, /lib, /lib64, /opt, /etc, /proc, /dev/urandom, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+
+landlock:
+  compatibility: hard_requirement
+
+network_policies:
+  git:
+    binaries:
+      - path: /usr/lib/git-core/git-remote-http
+      - path: /usr/libexec/git-core/git-remote-http
+    endpoints:
+      - host: github.com
+        port: 443
+

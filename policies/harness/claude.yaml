@@ -1,0 +1,9 @@
+  claude_subscription:
+    binaries:
+      - path: /usr/local/bin/claude
+      # Claude Desktop manages its own remote binary.
+      - path: /sandbox/.local/share/claude/versions/*
+    endpoints:
+      - {host: api.anthropic.com, port: 443, protocol: rest, enforcement: enforce, access: read-write}
+      - {host: claude.ai, port: 443, protocol: rest, enforcement: enforce, access: read-write}
+      - {host: platform.claude.com, port: 443, protocol: rest, enforcement: enforce, access: read-write}

@@ -1,0 +1,146 @@
+# The two selectors are independent. Build with images/ as context.
+ARG TOOLCHAIN=android
+ARG HARNESS=codex
+
+# Build-only installer: the final image receives just the SDK packages.
+FROM docker.io/library/ubuntu:24.04 AS android-sdk
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip openjdk-21-jre-headless \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pinned SDK installer 19.0; SHA-256 verified against Google's repository archive.
+# Installing the packages below accepts their Android SDK license.
+RUN curl --fail --location --retry 3 \
+      https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+      --output /tmp/android-tools.zip \
+    && echo '7ec965280a073311c339e571cd5de778b9975026cfcbe79f2b1cdcb1e15317ee  /tmp/android-tools.zip' | sha256sum --check \
+    && unzip -q /tmp/android-tools.zip -d /tmp/android-tools \
+    && yes | /tmp/android-tools/cmdline-tools/bin/sdkmanager --sdk_root=/opt/android-sdk \
+      "platforms;android-36" "build-tools;36.0.0" "platform-tools" \
+    && test -s /opt/android-sdk/platforms/android-36/android.jar \
+    && /opt/android-sdk/build-tools/36.0.0/aapt2 version \
+    && /opt/android-sdk/platform-tools/adb version \
+    && rm -rf /opt/android-sdk/.temp \
+    && chmod -R a-w /opt/android-sdk
+
+FROM docker.io/library/ubuntu:24.04 AS plain
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git python3 passwd wget \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM plain AS android
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openjdk-21-jdk-headless unzip \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=android-sdk /opt/android-sdk /opt/android-sdk
+RUN ln -s /opt/android-sdk/platform-tools/adb /usr/local/bin/adb \
+    && ln -s /opt/android-sdk/platform-tools/fastboot /usr/local/bin/fastboot \
+    && install -d -m 700 -o 1000 -g 1000 /sandbox/.android
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+    ANDROID_HOME=/opt/android-sdk \
+    ANDROID_USER_HOME=/sandbox/.android
+
+FROM registry.fedoraproject.org/fedora:43 AS plasma
+RUN dnf -y install --setopt=install_weak_deps=False \
+       ca-certificates curl-minimal git-core python3 shadow-utils tar findutils \
+       cmake gcc-c++ ninja-build extra-cmake-modules \
+       plasma-workspace plasma-sdk libplasma-devel kf6-kpackage-devel qt6-qtdeclarative-devel \
+    && dnf clean all
+
+# Download tools run at image build time, independently of the VM egress policy.
+FROM plain AS downloads
+RUN mkdir -p /opt /usr/local/bin /sandbox
+
+FROM downloads AS codex
+
+# Install the complete, pinned standalone Codex package, including its helpers.
+RUN curl --fail --location --retry 3 \
+      https://github.com/openai/codex/releases/download/rust-v0.167.1/codex-package-x86_64-unknown-linux-musl.tar.gz \
+      --output /tmp/codex.tar.gz \
+    && echo 'a945df3df83e849dd7b74787e27f8a459c1946b0e3afe3dc8eef8a8d1845fd4f  /tmp/codex.tar.gz' | sha256sum --check \
+    && mkdir -p /opt/codex \
+    && tar -xzf /tmp/codex.tar.gz --directory /opt/codex \
+    && rm /tmp/codex.tar.gz \
+    && /opt/codex/bin/codex --version
+
+RUN <<'SETUP'
+set -eu
+# SSH and the TUI must find the same guest-only state without env forwarding.
+mkdir -p /opt/codex/bin
+cat > /opt/codex/bin/launch <<'LAUNCHER'
+#!/bin/sh
+export CODEX_HOME=/sandbox/.codex
+exec /opt/codex/bin/codex "$@"
+LAUNCHER
+chmod 755 /opt/codex/bin/launch
+ln -s /opt/codex/bin/launch /usr/local/bin/codex
+install -d -m 700 -o 1000 -g 1000 /sandbox/.codex
+cat > /sandbox/.codex/config.toml <<'CONFIG'
+# OpenShell supplies the external VM/filesystem/network boundary.
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
+approvals_reviewer = "user"
+cli_auth_credentials_store = "file"
+CONFIG
+chown 1000:1000 /sandbox/.codex/config.toml
+SETUP
+
+FROM downloads AS claude
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends zstd \
+    && rm -rf /var/lib/apt/lists/*
+# Anthropic's native Linux x86_64 release and manifest checksum.
+RUN curl -fSL --retry 3 \
+      https://downloads.claude.ai/claude-code-releases/2.1.323/linux-x64/claude.zst \
+      -o /tmp/claude.zst \
+    && echo 'd5f85ac4e9b7ca95e6bbeeeaf05af7c20ff62ddd2a0f49b1f4a0699c30ab0686  /tmp/claude.zst' | sha256sum -c - \
+    && zstd -d /tmp/claude.zst -o /usr/local/bin/claude \
+    && chmod 755 /usr/local/bin/claude \
+    && rm /tmp/claude.zst \
+    && /usr/local/bin/claude --version
+
+FROM downloads AS antigravity
+# Google's native x86_64 archive and updater manifest checksum.
+RUN curl -fSL --retry 3 \
+      https://storage.googleapis.com/antigravity-public/antigravity-cli/1.5.13-5999302598852608/linux-x64/cli_linux_x64.tar.gz \
+      -o /tmp/agy.tar.gz \
+    && echo '014b37387703acab1f47cd532c8bb60167a6a3537b0f9891de03f1b1ffa9614307bc83c4b2f7551273b0877d722716b0cd9e26782f6b2a50705db4f05e18c68f  /tmp/agy.tar.gz' | sha512sum -c - \
+    && tar -xzf /tmp/agy.tar.gz -C /tmp antigravity \
+    && install -m 755 /tmp/antigravity /usr/local/bin/agy \
+    && rm /tmp/antigravity /tmp/agy.tar.gz \
+    && /usr/local/bin/agy --version
+
+FROM downloads AS opencode
+# The build used by the upstream v2 installer. Use the x86_64 baseline binary.
+RUN curl -fSL --retry 3 \
+      https://registry.npmjs.org/@opencode/cli-linux-x64-baseline/-/cli-linux-x64-baseline-2.3.2.tgz \
+      -o /tmp/opencode.tgz \
+    && echo '73c7f53e2989d1db4a705d6c17b23e052b3248e1fa1f39842ea11f0d376ecea046d8ecc11fa835b0fc02fd1e4b8537fa91f1bb15e2c7e5416bf594d395c45d13  /tmp/opencode.tgz' | sha512sum -c - \
+    && tar -xzf /tmp/opencode.tgz -C /tmp package/bin/opencode \
+    && install -m 755 /tmp/package/bin/opencode /usr/local/bin/opencode \
+    && rm -r /tmp/package /tmp/opencode.tgz \
+    && /usr/local/bin/opencode --version
+RUN install -d -m 700 -o 1000 -g 1000 /sandbox/.config/opencode \
+    && printf '%s\n' '{"model":"openrouter/moonshotai/kimi-k3"}' >/sandbox/.config/opencode/opencode.json \
+    && chown -R 1000:1000 /sandbox/.config
+
+FROM ${HARNESS} AS selected-harness
+
+FROM ${TOOLCHAIN} AS sandbox
+COPY --from=selected-harness /usr/local/bin/ /usr/local/bin/
+COPY --from=selected-harness /opt/ /opt/
+COPY --from=selected-harness --chown=1000:1000 /sandbox/ /sandbox/
+# Use the same writable home for SSH login, SFTP, and OpenShell exec.
+RUN set -eu; \
+    if entry=$(getent passwd 1000); then \
+        usermod --home /sandbox --shell /bin/bash "${entry%%:*}"; \
+    else \
+        useradd --uid 1000 --user-group --home-dir /sandbox --no-create-home --shell /bin/bash sandbox; \
+    fi; \
+    chown 1000:1000 /sandbox; \
+    install -d -o 1000 -g 1000 /sandbox/project
+ENV HOME=/sandbox
+USER 1000:1000
+WORKDIR /sandbox/project
+CMD ["/bin/sleep", "infinity"]

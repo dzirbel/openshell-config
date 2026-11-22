@@ -1,0 +1,26 @@
+  antigravity_subscription:
+    binaries:
+      - path: /usr/local/bin/agy
+      # Antigravity App manages its remote server under this directory.
+      - path: /sandbox/.antigravity-hub-server/**
+    endpoints:
+      - {host: oauth2.googleapis.com, port: 443, protocol: rest, enforcement: enforce, access: read-write}
+      - {host: accounts.google.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: www.googleapis.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: openidconnect.googleapis.com, port: 443, protocol: rest, enforcement: enforce, access: read-only}
+      - {host: cloudcode-pa.googleapis.com, port: 443, protocol: rest, enforcement: enforce, access: read-write}
+      - {host: aicode.googleapis.com, port: 443, protocol: rest, enforcement: enforce, access: read-write}
+      - {host: antigravity.google.com, port: 443, protocol: rest, enforcement: enforce, access: read-write}
+
+  antigravity_server_download:
+    binaries:
+      - path: /usr/bin/curl
+      - path: /usr/bin/wget
+    endpoints:
+      - host: storage.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: {method: GET, path: /antigravity-public/**}
+          - allow: {method: HEAD, path: /antigravity-public/**}
