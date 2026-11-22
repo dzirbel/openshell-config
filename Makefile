@@ -14,29 +14,8 @@ IMAGE_BUILD_ARGS := UBUNTU_IMAGE FEDORA_IMAGE \
     CODEX_URL CODEX_SHA256 CLAUDE_URL CLAUDE_SHA256 ANTIGRAVITY_URL ANTIGRAVITY_SHA512 \
     OPENCODE_URL OPENCODE_SHA512 OPENCODE_MODEL
 
-commands := help build create recreate restore list ssh-config policy policy-check policy-apply \
-    login status provider-init attach detach shell tui serve forward
-
 # A suffix like :new chooses the prompt source. @harness and @!harness
 # make an option conditional on the harness selected earlier in the list.
-build.options := HARNESS TOOLCHAIN IMAGE
-create.options := HARNESS TOOLCHAIN SANDBOX:new IMAGE PROVIDER@opencode
-recreate.options := HARNESS TOOLCHAIN SANDBOX IMAGE
-restore.options := HARNESS TOOLCHAIN SANDBOX:pending IMAGE
-ssh-config.options := SANDBOX
-policy.options := HARNESS TOOLCHAIN
-policy-check.options := $(policy.options)
-policy-apply.options := HARNESS TOOLCHAIN SANDBOX
-login.options := HARNESS SANDBOX@!opencode WORKDIR@antigravity
-status.options := HARNESS SANDBOX
-provider-init.options := PROVIDER:new
-attach.options := SANDBOX PROVIDER
-detach.options := $(attach.options)
-shell.options := SANDBOX WORKDIR
-tui.options := HARNESS SANDBOX WORKDIR
-serve.options := SANDBOX WORKDIR PORT
-forward.options := SANDBOX PORT
-
 # Make exports command-line assignments and inherited environment variables.
 define options
 source "$(ROOT)/scripts/make-options.sh"
@@ -69,19 +48,51 @@ if [[ $$TOOLCHAIN == android ]]; then
 fi
 endef
 
+define print_group
+echo
+echo '$(1)'
+$(foreach command,$(2), \
+    print_options $(command) $($(command).options); \
+    $(if $($(command).help),printf '    %s\n' '$($(command).help)';))
+endef
+
 .DEFAULT_GOAL := help
-.PHONY: $(commands)
 help:
 	@source "$(ROOT)/scripts/make-options.sh"
 	echo 'Usage: make TARGET [OPTION=value ...]'
 	echo
-	echo 'Targets and options'
-	$(foreach command,$(commands),print_options $(command) $($(command).options);)
+	print_options help
+	$(call print_group,One-time setup,$(setup_commands))
+	$(call print_group,Sandbox management,$(sandbox_commands))
+	$(call print_group,Policy management,$(policy_commands))
+	$(call print_group,Authentication,$(auth_commands))
+	$(call print_group,Development,$(development_commands))
 	echo
-	echo 'In a terminal, missing options prompt. Use Up/Down and Enter in pickers.'
-	echo 'Without a terminal, supply HARNESS, WORKDIR, and PORT whenever the target uses them.'
-	echo 'Export OPENROUTER_API_KEY before running make provider-init.'
+	echo 'HARNESS, WORKDIR, and PORT are required when not using an interactive terminal.'
 
+# One-time setup
+setup_commands := provider-init
+
+provider-init.options := PROVIDER:new
+provider-init.help := Uses OPENROUTER_API_KEY from the environment or prompts for it without echo in a terminal.
+provider-init:
+	@api_key=$${OPENROUTER_API_KEY:-}
+	if [[ -z $$api_key && -t 0 ]]; then
+	    IFS= read -rs -p 'OpenRouter API key: ' api_key || api_key=
+	    printf '\n' >&2
+	fi
+	if [[ -z $$api_key ]]; then
+	    echo 'OpenRouter API key is required. Set OPENROUTER_API_KEY or enter it at the terminal prompt.' >&2
+	    exit 2
+	fi
+	$(options)
+	openshell profile import --url "$(OPENROUTER_PROFILE)"
+	OPENROUTER_API_KEY="$$api_key" openshell provider create --name "$$PROVIDER" --type openrouter --from-existing
+
+# Sandbox management
+sandbox_commands := build create ssh-config recreate restore list
+
+build.options := HARNESS TOOLCHAIN IMAGE
 build:
 	@$(options)
 	podman build --skip-unused-stages=true --file "$(ROOT)/images/Containerfile" \
@@ -89,15 +100,7 @@ build:
 		$(foreach arg,$(IMAGE_BUILD_ARGS),--build-arg "$(arg)=$($(arg))") \
 		--tag "$$IMAGE" "$(ROOT)/images"
 
-policy policy-check:
-	@$(options)
-	$(prepare_policy)
-	if [[ $@ == policy ]]; then
-	    cat "$$policy"
-	else
-	    openshell-prover check --boundary "$$policy" "$$policy"
-	fi
-
+create.options := HARNESS TOOLCHAIN SANDBOX:new IMAGE PROVIDER@opencode
 create:
 	@$(options)
 	$(create_flags)
@@ -110,6 +113,13 @@ create:
 		--approval-mode manual --no-auto-providers "$${create_flags[@]}" --detach -- /bin/sleep infinity
 	"$(ROOT)/scripts/ssh-config.sh" publish "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf"
 
+ssh-config.options := SANDBOX
+ssh-config:
+	@$(options)
+	"$(ROOT)/scripts/ssh-config.sh" publish "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf"
+
+recreate.options := HARNESS TOOLCHAIN SANDBOX IMAGE
+restore.options := HARNESS TOOLCHAIN SANDBOX:pending IMAGE
 recreate restore:
 	@$(options)
 	$(prepare_policy)
@@ -120,19 +130,30 @@ recreate restore:
 list:
 	openshell sandbox list
 
-ssh-config:
-	@$(options)
-	"$(ROOT)/scripts/ssh-config.sh" publish "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf"
+# Policy management
+policy_commands := policy policy-check policy-apply
 
+policy.options := HARNESS TOOLCHAIN
+policy-check.options := $(policy.options)
+policy policy-check:
+	@$(options)
+	$(prepare_policy)
+	if [[ $@ == policy ]]; then
+	    cat "$$policy"
+	else
+	    openshell-prover check --boundary "$$policy" "$$policy"
+	fi
+
+policy-apply.options := HARNESS TOOLCHAIN SANDBOX
 policy-apply:
 	@$(options)
 	$(prepare_policy)
 	openshell policy set "$$SANDBOX" --policy "$$policy"
 
-shell:
-	@$(options)
-	openshell sandbox exec "$$SANDBOX" --tty --workdir "$$WORKDIR" -- /bin/bash
+# Authentication
+auth_commands := login status attach detach
 
+login.options := HARNESS SANDBOX@!opencode WORKDIR@antigravity
 login:
 	@$(options)
 	case $$HARNESS in
@@ -145,6 +166,7 @@ login:
 	    opencode) echo 'OpenCode uses the attached OpenRouter provider. See make provider-init and make attach.' ;;
 	esac
 
+status.options := HARNESS SANDBOX
 status:
 	@$(options)
 	case $$HARNESS in
@@ -154,6 +176,21 @@ status:
 	    opencode) openshell sandbox provider list "$$SANDBOX" ;;
 	esac
 
+attach.options := SANDBOX PROVIDER
+detach.options := $(attach.options)
+attach detach:
+	@$(options)
+	openshell sandbox provider "$@" "$$SANDBOX" "$$PROVIDER" --wait
+
+# Development
+development_commands := shell tui serve forward
+
+shell.options := SANDBOX WORKDIR
+shell:
+	@$(options)
+	openshell sandbox exec "$$SANDBOX" --tty --workdir "$$WORKDIR" -- /bin/bash
+
+tui.options := HARNESS SANDBOX WORKDIR
 tui:
 	@$(options)
 	case $$HARNESS in
@@ -166,22 +203,17 @@ tui:
 	esac
 	openshell sandbox exec "$$SANDBOX" --tty --workdir "$$WORKDIR" -- "$${command[@]}"
 
-provider-init:
-	@: "$${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY on the host}"
-	$(options)
-	openshell profile import --url "$(OPENROUTER_PROFILE)"
-	openshell provider create --name "$$PROVIDER" --type openrouter --from-existing
-
-attach detach:
-	@$(options)
-	openshell sandbox provider "$@" "$$SANDBOX" "$$PROVIDER" --wait
-
+serve.options := SANDBOX WORKDIR PORT
 # Start the server in one terminal and the loopback-only forward in a second.
 serve:
 	@$(options)
 	openshell sandbox exec "$$SANDBOX" --no-tty --workdir "$$WORKDIR" -- \
 		opencode serve --hostname 127.0.0.1 --port "$$PORT"
 
+forward.options := SANDBOX PORT
 forward:
 	@$(options)
 	openshell forward start "127.0.0.1:$$PORT" "$$SANDBOX"
+
+.PHONY: help $(setup_commands) $(sandbox_commands) $(policy_commands) \
+    $(auth_commands) $(development_commands)

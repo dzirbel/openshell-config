@@ -94,7 +94,6 @@ All `make` commands accept arguments, which can be passed in the form e.g. `make
 
 ## TODOs
 
-- Organize `Makefile`
 - Easy checkout of a git repo inside a sandbox
 - Simplify `git fetch-sandbox` setup and use/iterate on the handoff process
 - Consider migrating images to Alpine Linux
