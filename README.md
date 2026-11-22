@@ -92,7 +92,6 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 
 ## TODOs
 
-- Extract dependency versions/URLs/etc
 - Pick from a list instead of requiring `HARNESS`, `SANDBOX`, etc.
 - Remove defaults unless truly safe
 - Organize `Makefile`

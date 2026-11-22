@@ -1,4 +1,6 @@
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+include $(ROOT)/versions.mk
+
 HARNESS ?= codex
 TOOLCHAIN ?= $(if $(filter codex,$(HARNESS)),android,plain)
 SANDBOX ?= $(HARNESS)-dev
@@ -6,7 +8,6 @@ WORKDIR ?= /sandbox/project
 IMAGE ?= localhost/openshell-$(HARNESS):$(TOOLCHAIN)
 PROVIDER ?= openrouter
 PORT ?= 49374
-OPENROUTER_PROFILE := https://raw.githubusercontent.com/ai-openshell/openshell/v0.1.9/providers/openrouter.yaml
 
 ifneq ($(words $(HARNESS)),1)
 $(error Select one HARNESS)
@@ -22,6 +23,11 @@ $(error Unknown TOOLCHAIN "$(TOOLCHAIN)". Choose plain, android, or plasma)
 endif
 
 STATE := $(ROOT)/.openshell
+IMAGE_BUILD_ARGS := UBUNTU_IMAGE FEDORA_IMAGE \
+    ANDROID_JDK_MAJOR ANDROID_JAVA_HOME ANDROID_API_LEVEL ANDROID_BUILD_TOOLS_VERSION \
+    ANDROID_COMMAND_LINE_TOOLS_URL ANDROID_COMMAND_LINE_TOOLS_SHA256 \
+    CODEX_URL CODEX_SHA256 CLAUDE_URL CLAUDE_SHA256 ANTIGRAVITY_URL ANTIGRAVITY_SHA512 \
+    OPENCODE_URL OPENCODE_SHA512 OPENCODE_MODEL
 POLICY := $(STATE)/policy/$(HARNESS)-$(TOOLCHAIN).yaml
 POLICY_INPUTS := $(ROOT)/policies/base.yaml \
     $(wildcard $(ROOT)/policies/harness/$(HARNESS).yaml $(ROOT)/policies/toolchain/$(TOOLCHAIN).yaml)
@@ -29,7 +35,7 @@ SSH_CONFIG := $(STATE)/ssh/$(SANDBOX).conf
 CREATE_FLAGS := --label "harness=$(HARNESS)" --label "toolchain=$(TOOLCHAIN)"
 ifeq ($(TOOLCHAIN),android)
 # Include explicit values for runtimes that do not inherit all image env.
-CREATE_FLAGS += --env JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 \
+CREATE_FLAGS += --env "JAVA_HOME=$(ANDROID_JAVA_HOME)" \
     --env ANDROID_HOME=/opt/android-sdk --env ANDROID_USER_HOME=/sandbox/.android
 endif
 CREATE_PROVIDER = $(if $(and $(filter opencode,$(HARNESS)),$(strip $(PROVIDER))),--provider "$(PROVIDER)")
@@ -47,13 +53,14 @@ help:
 build:
 	podman build --skip-unused-stages=true --file "$(ROOT)/images/Containerfile" \
 		--build-arg "HARNESS=$(HARNESS)" --build-arg "TOOLCHAIN=$(TOOLCHAIN)" \
+		$(foreach arg,$(IMAGE_BUILD_ARGS),--build-arg "$(arg)=$($(arg))") \
 		--tag "$(IMAGE)" "$(ROOT)/images"
 
-$(POLICY): $(POLICY_INPUTS) $(ROOT)/Makefile
+$(POLICY): $(POLICY_INPUTS) $(ROOT)/Makefile $(ROOT)/versions.mk
 	@set -eu; mkdir -p "$(@D)"; \
 	temporary=$$(mktemp "$@.XXXXXX"); \
 	trap 'rm -f -- "$$temporary"' EXIT; \
-	cat $(foreach file,$(POLICY_INPUTS),"$(file)") >"$$temporary"; \
+	sed 's|__ANDROID_JAVA_HOME__|$(ANDROID_JAVA_HOME)|g' $(foreach file,$(POLICY_INPUTS),"$(file)") >"$$temporary"; \
 	mv -fT -- "$$temporary" "$@"
 
 policy: $(POLICY)

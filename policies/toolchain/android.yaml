@@ -1,6 +1,6 @@
   java:
     binaries:
-      - path: /usr/lib/jvm/java-21-openjdk-amd64/bin/java
+      - path: __ANDROID_JAVA_HOME__/bin/java
       - path: /sandbox/.local/jdks/*/bin/java
       - path: /sandbox/.local/jdks/*/bin/java-native
     endpoints:
