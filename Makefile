@@ -1,26 +1,11 @@
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 include $(ROOT)/versions.mk
 
-HARNESS ?= codex
-TOOLCHAIN ?= $(if $(filter codex,$(HARNESS)),android,plain)
-SANDBOX ?= $(HARNESS)-dev
-WORKDIR ?= /sandbox/project
-IMAGE ?= localhost/openshell-$(HARNESS):$(TOOLCHAIN)
-PROVIDER ?= openrouter
-PORT ?= 49374
-
-ifneq ($(words $(HARNESS)),1)
-$(error Select one HARNESS)
-endif
-ifeq ($(filter codex claude antigravity opencode,$(HARNESS)),)
-$(error Unknown HARNESS "$(HARNESS)". Choose codex, claude, antigravity, or opencode)
-endif
-ifneq ($(words $(TOOLCHAIN)),1)
-$(error Select one TOOLCHAIN)
-endif
-ifeq ($(filter plain android plasma,$(TOOLCHAIN)),)
-$(error Unknown TOOLCHAIN "$(TOOLCHAIN)". Choose plain, android, or plasma)
-endif
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+.ONESHELL:
+# GNU Make only gives one running recipe access to terminal input.
+.NOTPARALLEL:
 
 STATE := $(ROOT)/.openshell
 IMAGE_BUILD_ARGS := UBUNTU_IMAGE FEDORA_IMAGE \
@@ -28,110 +13,175 @@ IMAGE_BUILD_ARGS := UBUNTU_IMAGE FEDORA_IMAGE \
     ANDROID_COMMAND_LINE_TOOLS_URL ANDROID_COMMAND_LINE_TOOLS_SHA256 \
     CODEX_URL CODEX_SHA256 CLAUDE_URL CLAUDE_SHA256 ANTIGRAVITY_URL ANTIGRAVITY_SHA512 \
     OPENCODE_URL OPENCODE_SHA512 OPENCODE_MODEL
-POLICY := $(STATE)/policy/$(HARNESS)-$(TOOLCHAIN).yaml
-POLICY_INPUTS := $(ROOT)/policies/base.yaml \
-    $(wildcard $(ROOT)/policies/harness/$(HARNESS).yaml $(ROOT)/policies/toolchain/$(TOOLCHAIN).yaml)
-SSH_CONFIG := $(STATE)/ssh/$(SANDBOX).conf
-CREATE_FLAGS := --label "harness=$(HARNESS)" --label "toolchain=$(TOOLCHAIN)"
-ifeq ($(TOOLCHAIN),android)
-# Include explicit values for runtimes that do not inherit all image env.
-CREATE_FLAGS += --env "JAVA_HOME=$(ANDROID_JAVA_HOME)" \
-    --env ANDROID_HOME=/opt/android-sdk --env ANDROID_USER_HOME=/sandbox/.android
-endif
-CREATE_PROVIDER = $(if $(and $(filter opencode,$(HARNESS)),$(strip $(PROVIDER))),--provider "$(PROVIDER)")
+
+commands := help build create recreate restore list ssh-config policy policy-check policy-apply \
+    login status provider-init attach detach shell tui serve forward
+
+# A suffix like :new chooses the prompt source. @harness and @!harness
+# make an option conditional on the harness selected earlier in the list.
+build.options := HARNESS TOOLCHAIN IMAGE
+create.options := HARNESS TOOLCHAIN SANDBOX:new IMAGE PROVIDER@opencode
+recreate.options := HARNESS TOOLCHAIN SANDBOX IMAGE
+restore.options := HARNESS TOOLCHAIN SANDBOX:pending IMAGE
+ssh-config.options := SANDBOX
+policy.options := HARNESS TOOLCHAIN
+policy-check.options := $(policy.options)
+policy-apply.options := HARNESS TOOLCHAIN SANDBOX
+login.options := HARNESS SANDBOX@!opencode WORKDIR@antigravity
+status.options := HARNESS SANDBOX
+provider-init.options := PROVIDER:new
+attach.options := SANDBOX PROVIDER
+detach.options := $(attach.options)
+shell.options := SANDBOX WORKDIR
+tui.options := HARNESS SANDBOX WORKDIR
+serve.options := SANDBOX WORKDIR PORT
+forward.options := SANDBOX PORT
+
+# Make exports command-line assignments and inherited environment variables.
+define options
+source "$(ROOT)/scripts/make-options.sh"
+resolve_options $($@.options)
+endef
+
+define prepare_policy
+policy="$(STATE)/policy/$$HARNESS-$$TOOLCHAIN.yaml"
+(
+    mkdir -p -- "$(STATE)/policy"
+    temporary=$$(mktemp "$$policy.XXXXXX")
+    trap 'rm -f -- "$$temporary"' EXIT
+    inputs=("$(ROOT)/policies/base.yaml")
+    for fragment in "$(ROOT)/policies/harness/$$HARNESS.yaml" "$(ROOT)/policies/toolchain/$$TOOLCHAIN.yaml"; do
+        [[ ! -f $$fragment ]] || inputs+=("$$fragment")
+    done
+    sed 's|__ANDROID_JAVA_HOME__|$(ANDROID_JAVA_HOME)|g' "$${inputs[@]}" >"$$temporary"
+    if ! cmp -s -- "$$temporary" "$$policy"; then
+        mv -fT -- "$$temporary" "$$policy"
+    fi
+)
+endef
+
+define create_flags
+create_flags=(--label "harness=$$HARNESS" --label "toolchain=$$TOOLCHAIN")
+if [[ $$TOOLCHAIN == android ]]; then
+    # Include explicit values for runtimes that do not inherit all image env.
+    create_flags+=(--env "JAVA_HOME=$(ANDROID_JAVA_HOME)" \
+        --env ANDROID_HOME=/opt/android-sdk --env ANDROID_USER_HOME=/sandbox/.android)
+fi
+endef
 
 .DEFAULT_GOAL := help
-.PHONY: help build create recreate restore list shell tui login status ssh-config \
-    policy policy-check policy-apply provider-init attach detach serve forward
+.PHONY: $(commands)
 help:
-	@echo 'make build create HARNESS=codex|claude|antigravity|opencode TOOLCHAIN=plain|android|plasma SANDBOX=NAME'
-	@echo 'make list, shell, tui, login, status, ssh-config'
-	@echo 'make recreate or restore with the same sandbox and selected harness/toolchain'
-	@echo 'make policy, policy-check, policy-apply'
-	@echo 'OpenCode: make provider-init once, then attach/detach, serve, and forward as needed'
+	@source "$(ROOT)/scripts/make-options.sh"
+	echo 'Usage: make TARGET [OPTION=value ...]'
+	echo
+	echo 'Targets and options'
+	$(foreach command,$(commands),print_options $(command) $($(command).options);)
+	echo
+	echo 'In a terminal, missing options prompt. Use Up/Down and Enter in pickers.'
+	echo 'Without a terminal, supply HARNESS, WORKDIR, and PORT whenever the target uses them.'
+	echo 'Export OPENROUTER_API_KEY before running make provider-init.'
 
 build:
+	@$(options)
 	podman build --skip-unused-stages=true --file "$(ROOT)/images/Containerfile" \
-		--build-arg "HARNESS=$(HARNESS)" --build-arg "TOOLCHAIN=$(TOOLCHAIN)" \
+		--build-arg "HARNESS=$$HARNESS" --build-arg "TOOLCHAIN=$$TOOLCHAIN" \
 		$(foreach arg,$(IMAGE_BUILD_ARGS),--build-arg "$(arg)=$($(arg))") \
-		--tag "$(IMAGE)" "$(ROOT)/images"
+		--tag "$$IMAGE" "$(ROOT)/images"
 
-$(POLICY): $(POLICY_INPUTS) $(ROOT)/Makefile $(ROOT)/versions.mk
-	@set -eu; mkdir -p "$(@D)"; \
-	temporary=$$(mktemp "$@.XXXXXX"); \
-	trap 'rm -f -- "$$temporary"' EXIT; \
-	sed 's|__ANDROID_JAVA_HOME__|$(ANDROID_JAVA_HOME)|g' $(foreach file,$(POLICY_INPUTS),"$(file)") >"$$temporary"; \
-	mv -fT -- "$$temporary" "$@"
+policy policy-check:
+	@$(options)
+	$(prepare_policy)
+	if [[ $@ == policy ]]; then
+	    cat "$$policy"
+	else
+	    openshell-prover check --boundary "$$policy" "$$policy"
+	fi
 
-policy: $(POLICY)
-	@cat "$(POLICY)"
+create:
+	@$(options)
+	$(create_flags)
+	if [[ $$HARNESS == opencode && -n $$PROVIDER ]]; then
+	    create_flags+=(--provider "$$PROVIDER")
+	fi
+	$(prepare_policy)
+	"$(ROOT)/scripts/ssh-config.sh" check "$$SANDBOX"
+	openshell sandbox create --name "$$SANDBOX" --from "$$IMAGE" --policy "$$policy" \
+		--approval-mode manual --no-auto-providers "$${create_flags[@]}" --detach -- /bin/sleep infinity
+	"$(ROOT)/scripts/ssh-config.sh" publish "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf"
 
-policy-check: $(POLICY)
-	openshell-prover check --boundary "$(POLICY)" "$(POLICY)"
-
-create: $(POLICY)
-	"$(ROOT)/scripts/ssh-config.sh" check "$(SANDBOX)"
-	openshell sandbox create --name "$(SANDBOX)" --from "$(IMAGE)" --policy "$(POLICY)" \
-		--approval-mode manual --no-auto-providers $(CREATE_FLAGS) $(CREATE_PROVIDER) --detach -- /bin/sleep infinity
-	"$(ROOT)/scripts/ssh-config.sh" publish "$(SANDBOX)" "$(SSH_CONFIG)"
-
-recreate restore: $(POLICY)
-	"$(ROOT)/scripts/recreate.sh" "$@" "$(SANDBOX)" "$(IMAGE)" "$(POLICY)" "$(SSH_CONFIG)" \
-		"$(HARNESS)" "$(TOOLCHAIN)" $(CREATE_FLAGS)
+recreate restore:
+	@$(options)
+	$(prepare_policy)
+	$(create_flags)
+	"$(ROOT)/scripts/recreate.sh" "$@" "$$SANDBOX" "$$IMAGE" "$$policy" \
+		"$(STATE)/ssh/$$SANDBOX.conf" "$$HARNESS" "$$TOOLCHAIN" "$${create_flags[@]}"
 
 list:
 	openshell sandbox list
 
 ssh-config:
-	"$(ROOT)/scripts/ssh-config.sh" publish "$(SANDBOX)" "$(SSH_CONFIG)"
+	@$(options)
+	"$(ROOT)/scripts/ssh-config.sh" publish "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf"
 
-policy-apply: $(POLICY)
-	openshell policy set "$(SANDBOX)" --policy "$(POLICY)"
+policy-apply:
+	@$(options)
+	$(prepare_policy)
+	openshell policy set "$$SANDBOX" --policy "$$policy"
 
 shell:
-	openshell sandbox exec "$(SANDBOX)" --tty --workdir "$(WORKDIR)" -- /bin/bash
+	@$(options)
+	openshell sandbox exec "$$SANDBOX" --tty --workdir "$$WORKDIR" -- /bin/bash
 
-ifeq ($(HARNESS),codex)
 login:
-	openshell sandbox exec "$(SANDBOX)" --tty -- codex login --device-auth
+	@$(options)
+	case $$HARNESS in
+	    codex) openshell sandbox exec "$$SANDBOX" --tty -- codex login --device-auth ;;
+	    claude) openshell sandbox exec "$$SANDBOX" --tty -- claude auth login --claudeai ;;
+	    antigravity)
+	        # Google's login selects its copy/paste flow in an SSH session.
+	        "$(ROOT)/scripts/ssh-config.sh" agy "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf" "$$WORKDIR"
+	        ;;
+	    opencode) echo 'OpenCode uses the attached OpenRouter provider. See make provider-init and make attach.' ;;
+	esac
+
 status:
-	openshell sandbox exec "$(SANDBOX)" -- codex login status
+	@$(options)
+	case $$HARNESS in
+	    codex) openshell sandbox exec "$$SANDBOX" -- codex login status ;;
+	    claude) openshell sandbox exec "$$SANDBOX" -- claude auth status ;;
+	    antigravity) openshell sandbox get "$$SANDBOX" ;;
+	    opencode) openshell sandbox provider list "$$SANDBOX" ;;
+	esac
+
 tui:
-	openshell sandbox exec "$(SANDBOX)" --tty --workdir "$(WORKDIR)" -- codex --no-daemon
-else ifeq ($(HARNESS),claude)
-login:
-	openshell sandbox exec "$(SANDBOX)" --tty -- claude auth login --claudeai
-status:
-	openshell sandbox exec "$(SANDBOX)" -- claude auth status
-tui:
-	openshell sandbox exec "$(SANDBOX)" --tty --workdir "$(WORKDIR)" -- claude
-else ifeq ($(HARNESS),antigravity)
-# Google's login selects its copy/paste flow in an SSH session.
-login tui:
-	"$(ROOT)/scripts/ssh-config.sh" agy "$(SANDBOX)" "$(SSH_CONFIG)" "$(WORKDIR)"
-status:
-	openshell sandbox get "$(SANDBOX)"
-else
-login:
-	@echo 'OpenCode uses the attached OpenRouter provider. See make provider-init and make attach.'
-status:
-	openshell sandbox provider list "$(SANDBOX)"
-tui:
-	openshell sandbox exec "$(SANDBOX)" --tty --workdir "$(WORKDIR)" -- opencode --standalone
-endif
+	@$(options)
+	case $$HARNESS in
+	    codex) command=(codex --no-daemon) ;;
+	    claude) command=(claude) ;;
+	    opencode) command=(opencode --standalone) ;;
+	    antigravity)
+	        exec "$(ROOT)/scripts/ssh-config.sh" agy "$$SANDBOX" "$(STATE)/ssh/$$SANDBOX.conf" "$$WORKDIR"
+	        ;;
+	esac
+	openshell sandbox exec "$$SANDBOX" --tty --workdir "$$WORKDIR" -- "$${command[@]}"
 
 provider-init:
-	@set -eu; : "$${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY on the host}"; \
-	openshell profile import --url "$(OPENROUTER_PROFILE)"; \
-	openshell provider create --name "$(PROVIDER)" --type openrouter --from-existing
+	@: "$${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY on the host}"
+	$(options)
+	openshell profile import --url "$(OPENROUTER_PROFILE)"
+	openshell provider create --name "$$PROVIDER" --type openrouter --from-existing
 
 attach detach:
-	openshell sandbox provider "$@" "$(SANDBOX)" "$(PROVIDER)" --wait
+	@$(options)
+	openshell sandbox provider "$@" "$$SANDBOX" "$$PROVIDER" --wait
 
 # Start the server in one terminal and the loopback-only forward in a second.
 serve:
-	openshell sandbox exec "$(SANDBOX)" --no-tty --workdir "$(WORKDIR)" -- \
-		opencode serve --hostname 127.0.0.1 --port "$(PORT)"
+	@$(options)
+	openshell sandbox exec "$$SANDBOX" --no-tty --workdir "$$WORKDIR" -- \
+		opencode serve --hostname 127.0.0.1 --port "$$PORT"
 
 forward:
-	openshell forward start "127.0.0.1:$(PORT)" "$(SANDBOX)"
+	@$(options)
+	openshell forward start "127.0.0.1:$$PORT" "$$SANDBOX"

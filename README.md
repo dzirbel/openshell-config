@@ -18,6 +18,8 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 
 ## Usage
 
+All `make` commands accept arguments, which can be passed in the form e.g. `make build HARNESS=codex`. If not specified interactive pickers will be used.
+
 #### One-time setup
 - Install OpenShell, Podman, GNU Make, Git, and OpenSSH; make sure the default `openshell` gateway is set up
 - Add `Include </absolute/path/to/openshell-config>/.openshell/ssh/*.conf` to the top of `~/.ssh/config`
@@ -25,9 +27,9 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 - To use OpenRouter-backed harnesses like OpenCode export `OPENROUTER_API_KEY` on the client and run `make provider-init` (once per OpenShell workspace if you are using more than just the `default`). Defaults to Kimi K3.
 
 #### Sandbox management
-- `make build`: builds an OCI image with `podman` with the given `HARNESS` and `TOOLCHAIN` options
+- `make build`: builds an OCI image with `podman` with the given `HARNESS` and `TOOLCHAIN`
 - `make create`: creates an OpenShell sandbox from the `make build` image with the given `HARNESS` and `TOOLCHAIN` options (and optional `SANDBOX` name, default `$HARNESS-dev`) and publishes its SSH configuration
-- `make ssh-config`: regenerates the sandbox's SSH configuration file from `openshell` into `.openshell/ssh/<sandbox>.conf` (in this directory)
+- `make ssh-config`: regenerates a sandbox's SSH configuration file from `openshell` into `.openshell/ssh/<sandbox>.conf` (in this directory)
 - `make recreate`: recreate the given `SANDBOX` (with `HARNESS` and `TOOLCHAIN` specifications), preserving its `/sandbox` directory; mainly used to apply new VM configuration options
     - Providers are reattached and the SSH entry is regenerated as well
     - Applies the OpenShell policy built from the repository, overriding any live approvals of the sandbox
@@ -49,7 +51,7 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 - `make login`: authenticates the given `SANDBOX` for the given `HARNESS`:
     - Codex: starts the ChatGPT device-code flow
     - Claude: starts the Claude account sign-in flow
-    - Antigravity: runs `agy` via SSH, which prompts for login if needed
+    - Antigravity: runs `agy` via SSH, which prompts for login if needed; also requires `WORKDIR`
     - OpenCode: prints OpenRouter setup instructions; see above
 - `make status`: shows authentication state of the given `SANDBOX` for the given `HARNESS`:
     - Codex/Claude: prints live sign-in status
@@ -63,8 +65,8 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 - `make tui`: open a TUI session in the given `SANDBOX` for the given `HARNESS` at the given `WORKDIR`
 - `make serve`: start an OpenCode server at a given `PORT` (default `49374`) inside a given `SANDBOX` at a given `WORKDIR`; used with `make forward`
 - `make forward`: forward the given `PORT` (default `49374`) of a given `SANDBOX`; used with `make serve`
-- `git fetch-sandbox <ref>`: in a project git repository, fetches commits from `<ref>` (`HEAD`, branch, commit, etc.) into a local worktree for review
-    - Defaults to `/sandbox/project/<project-dir>`; pass a different directory as `git fetch-sandbox <ref> <sandbox-project-dir>` or set it with `git config sandbox.path <sandbox-project-dir>`
+- `git fetch-sandbox REF [SANDBOX_PATH [WORKTREE_PATH]]`: in a project git repository, fetches commits from `REF` (`HEAD`, branch, commit ID) into a local worktree for review
+    - `SANDBOX_PATH` defaults to `/sandbox/project/<project-dir>`; pass a different directory or set it with `git config --local sandbox.path <sandbox-project-dir>`
     - Defaults to the SSH alias `openshell-codex-dev.default`; configure with `git config --local sandbox.host <generated-ssh-alias>`
 
 ## Support
@@ -92,8 +94,6 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 
 ## TODOs
 
-- Pick from a list instead of requiring `HARNESS`, `SANDBOX`, etc.
-- Remove defaults unless truly safe
 - Organize `Makefile`
 - Easy checkout of a git repo inside a sandbox
 - Simplify `git fetch-sandbox` setup and use/iterate on the handoff process
@@ -102,3 +102,4 @@ Code is generally AI-written, but closely reviewed and documentation is always h
 - `make check` or similar to run tests, verify dependencies are installed, etc.
 - Combine/simplify `make serve` and `make forward`?
 - Diff of live vs. repo policies
+- Remove `git fetch-sandbox` default SSH alias
