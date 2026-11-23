@@ -35,6 +35,7 @@ All `make` commands accept arguments, which can be passed in the form e.g. `make
     - Applies the OpenShell policy built from the repository, overriding any live approvals of the sandbox
 - `make restore`: resumes an interrupted `make recreate` with the same `/sandbox` backup
 - `make list`: list sandboxes; `openshell sandbox list` alias
+- `podman images`: list built OCI images; may be removed with `podman image prune -a` after `make create`
 - `openshell sandbox get NAME`: show sandbox details
 - `openshell sandbox start|stop NAME`: start or stop a sandbox to free resources while preserving its filesystem and configuration
 - `openshell sandbox delete NAME`: deletes a sandbox and its workspace
@@ -91,6 +92,30 @@ All `make` commands accept arguments, which can be passed in the form e.g. `make
     - `harness/` contains specifics for particular sandbox harnesses, e.g. allowing Codex access to `auth.openai.com`
     - `toolchain/` contains configurations for particular development environments, e.g. Android allowing `java` access to Maven downloads
 - `scripts/`: bash scripts
+
+## Fedora setup
+
+Documenting my suite of AI tools on Fedora and their installation path (my preference is DNF > Brew > Custom):
+- OpenAI:
+    - GUI: ChatGPT desktop via official `chatgpt` DNF package
+    - CLI: `codex` via Homebrew `codex` cask
+- Anthropic:
+    - GUI: Claude Desktop via Ubuntu 24.04 Distrobox exported app from the official APT package
+    - CLI: `claude` via official `claude-code` DNF package
+- Google:
+    - GUI: Antigravity App tarball extracted to `/opt`, custom desktop launcher
+    - CLI: `agy` via Homebrow `antigravity-cli` cask
+- Microsoft:
+    - CLI: `copilot` via Homebrew `copilot-cli` cask
+- xAI:
+    - CLI: `grok` via Homebrew `grok-build` cask
+- OpenCode:
+    - GUI: OpenCode Desktop via Homebrew `opencode-desktop` cask
+    - CLI: `opencode` via Homebrew `opencode-v2` formula
+- Cursor:
+    - GUI: Cursor via official `cursor` DNF package
+- Herdr:
+    - GUI: Herdr via official install script
 
 ## TODOs
 
